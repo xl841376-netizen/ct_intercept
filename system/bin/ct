@@ -1,20 +1,13 @@
 #!/system/bin/sh
-# ct - 通用容器中间层（纯本地进程交互，不暴露端口）
-
 CONFIG_FILE="/data/local/ct/containers.conf"
-
-# ---------- INI 读取 ----------
 read_config() {
-    section="$1"
-    key="$2"
+    section="$1"; key="$2"
     awk -v s="[$section]" -v k="$key" '
         $0 == s { in_section=1; next }
         in_section && /^\[/ { in_section=0 }
         in_section && index($0, k "=") == 1 { sub(/^[^=]*=/, ""); print; exit }
     ' "$CONFIG_FILE"
 }
-
-# ---------- PTY 仿真（无 tty 时用 script 包装） ----------
 ensure_pty() {
     if [ -t 0 ] && [ -t 1 ]; then
         exec "$@"
@@ -30,177 +23,87 @@ ensure_pty() {
         fi
     fi
 }
-
-# ---------- 容器驱动 ----------
 run_container() {
-    local action container
-    action="$1"
-    container="$2"
+    local action="$1" container="$2"
     shift 2
-
     local type binary rootfs extra_args default_shell
     type=$(read_config "$container" "type")
     binary=$(read_config "$container" "binary")
     rootfs=$(read_config "$container" "rootfs")
     extra_args=$(read_config "$container" "extra_args")
     default_shell=$(read_config "$container" "default_shell" 2>/dev/null || echo "bash")
-
     [ -z "$type" ] && { echo "Error: container '$container' not found"; exit 1; }
-
     case "$type" in
         droidspaces)
             case "$action" in
-                enter)
-                    ensure_pty "$binary" --name="$container" enter
-                    ;;
-                exec)
-                    exec "$binary" --name="$container" run "$@"
-                    ;;
-                stop)
-                    "$binary" --name="$container" stop
-                    while "$binary" --name="$container" show >/dev/null 2>&1; do
-                        sleep 0.5
-                    done
-                    exit $?
-                    ;;
-                status)
-                    if "$binary" --name="$container" show >/dev/null 2>&1; then
-                        "$binary" --name="$container" show 2>&1 | head -20
-                    else
-                        echo "stopped"
-                    fi
-                    ;;
-                *)
-                    echo "Unknown action: $action"
-                    exit 1
-                    ;;
-            esac
-            ;;
+                enter) ensure_pty "$binary" --name="$container" enter ;;
+                exec) exec "$binary" --name="$container" run "$@" ;;
+                stop) "$binary" --name="$container" stop
+                    while "$binary" --name="$container" show >/dev/null 2>&1; do sleep 0.5; done; exit $? ;;
+                status) if "$binary" --name="$container" show >/dev/null 2>&1; then "$binary" --name="$container" show 2>&1 | head -20; else echo "stopped"; fi ;;
+                *) echo "Unknown action: $action"; exit 1 ;;
+            esac ;;
         proot)
             pre_cmd="$binary -r $rootfs $extra_args"
             case "$action" in
-                enter)
-                    ensure_pty $pre_cmd /bin/$default_shell -l
-                    ;;
-                exec)
-                    exec $pre_cmd "$@"
-                    ;;
-                stop)
-                    pkill -f "$binary.*$rootfs" 2>/dev/null
-                    exit 0
-                    ;;
-                status)
-                    pgrep -f "$binary.*$rootfs" >/dev/null 2>&1 \
-                        && echo "running" || echo "stopped"
-                    exit 0
-                    ;;
-                *)
-                    echo "Unknown action: $action"
-                    exit 1
-                    ;;
-            esac
-            ;;
-        *)
-            echo "Unsupported container type: $type"
-            exit 1
-            ;;
+                enter) ensure_pty $pre_cmd /bin/$default_shell -l ;;
+                exec) exec $pre_cmd "$@" ;;
+                stop) pkill -f "$binary.*$rootfs" 2>/dev/null; exit 0 ;;
+                status) pgrep -f "$binary.*$rootfs" >/dev/null 2>&1 && echo "running" || echo "stopped"; exit 0 ;;
+                *) echo "Unknown action: $action"; exit 1 ;;
+            esac ;;
+        *) echo "Unsupported container type: $type"; exit 1 ;;
     esac
 }
-
-# ---------- exec_code: nc 直连容器常驻 daemon (127.0.0.1:9998) ----------
 exec_code() {
-    local container="$1"
-    local binary="$2"
-    local default_shell="$3"
-    local timeout="${4:-120000}"
-    local interpreter="${5:-$default_shell}"
-    local code_arg="$6"
-
-    # 读取代码 / @b64: 直通
+    local container="$1" binary="$2" default_shell="$3" timeout="${4:-120000}" interpreter="${5:-$default_shell}" code_arg="$6"
     local code b64
     if [ -n "$code_arg" ]; then
         case "$code_arg" in
-            @b64:*)
-                b64="${code_arg#@b64:}"
-                ;;
-            *)
-                code="$code_arg"
-                ;;
+            @b64:*) b64="${code_arg#@b64:}" ;;
+            *) code="$code_arg" ;;
         esac
     else
         code=$(cat 2>/dev/null)
     fi
-
     if [ -z "$b64" ]; then
         [ -z "$code" ] && { echo "Error: empty code input"; exit 1; }
         b64=$(printf '%s' "$code" | base64 -w0 2>/dev/null)
     fi
     [ -z "$b64" ] && { echo "Error: base64 encode failed"; exit 1; }
-
-    # nc 直连常驻 daemon (容器 host 网络，127.0.0.1:9998 可达)
-    printf '%s' "$b64" | nc -w 10 127.0.0.1 9998
+    local dport
+    dport=$(read_config "$container" "daemon_port" 2>/dev/null)
+    [ -z "$dport" ] && dport=9998
+    printf '%s' "$b64" | nc -w 10 127.0.0.1 "$dport"
     return $?
 }
-
-# ---------- 主入口 ----------
 usage() {
     echo "Usage: ct <container> {enter|exec <cmd>|stop|status|exec_code [code] [interpreter]}"
     echo "       ct list"
-    echo "       ct <container> exec_code < code_file"
-    echo "       ct <container> exec_code 'inline code'"
-    echo "       ct <container> exec_code 'code' python3"
     exit 1
 }
-
 [ $# -eq 0 ] && usage
-
 case "$1" in
-    list)
-        awk -F'[][]' '/^\[.*\]/ { print $2 }' "$CONFIG_FILE"
-        exit 0
-        ;;
+    list) awk -F'[][]' '/^\[.*\]/ { print $2 }' "$CONFIG_FILE"; exit 0 ;;
     *)
-        container="$1"
-        shift
+        container="$1"; shift
         [ $# -ge 1 ] || usage
-        action="$1"
-        shift
-
-        # exec_code 单独处理，不走 run_container
+        action="$1"; shift
         if [ "$action" = "exec_code" ]; then
             type=$(read_config "$container" "type")
             binary=$(read_config "$container" "binary")
             default_shell=$(read_config "$container" "default_shell" 2>/dev/null || echo "bash")
             [ -z "$type" ] && { echo "Error: container '$container' not found"; exit 1; }
-
             case "$type" in
                 droidspaces)
-                    local interp="$default_shell"
-                    local code=""
-                    if [ $# -ge 2 ]; then
-                        code="$1"
-                        interp="$2"
+                    local interp="$default_shell" code=""
+                    if [ $# -ge 2 ]; then code="$1"; interp="$2"
                     elif [ $# -eq 1 ]; then
-                        case "$1" in
-                            sh|bash|zsh|dash|python3|python|perl|ruby|node)
-                                interp="$1"
-                                code=""
-                                ;;
-                            *)
-                                code="$1"
-                                ;;
-                        esac
+                        case "$1" in sh|bash|zsh|dash|python3|python|perl|ruby|node) interp="$1"; code="" ;; *) code="$1" ;; esac
                     fi
-                    exec_code "$container" "$binary" "$default_shell" "120000" "$interp" "$code"
-                    exit $?
-                    ;;
-                *)
-                    echo "exec_code only supports droidspaces containers"
-                    exit 1
-                    ;;
+                    exec_code "$container" "$binary" "$default_shell" "120000" "$interp" "$code"; exit $? ;;
+                *) echo "exec_code only supports droidspaces containers"; exit 1 ;;
             esac
         fi
-
-        run_container "$action" "$container" "$@"
-        ;;
+        run_container "$action" "$container" "$@" ;;
 esac

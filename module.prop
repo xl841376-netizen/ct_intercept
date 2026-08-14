@@ -1,6 +1,6 @@
 id=ct_intercept
 name=Container Interception Layer
-version=2.5
-versionCode=5
+version=2.6
+versionCode=6
 author=Operit
-description=通用容器中间层：ct exec_code 走 nc 直连常驻 daemon:9998；开机自动部署 ct_receiver_daemon 到容器。纯本地进程交互，不暴露外部端口。
+description=通用容器中间层：ct exec_code 走 nc 直连常驻 daemon；每容器自动分配独立端口（9998起）；开机自动部署；安装/卸载自动清理。
