@@ -1,0 +1,34 @@
+# ct_intercept SELinux policy
+# 容器内 systemd/journald、python3 daemon、ds-monitor /proc 轮询所需的
+# droidspacesd self 访问规则，消除审计日志噪音。
+# 类型 droidspacesd 由 droidspaces 官方模块声明；本模块仅补充 allow 规则。
+
+# journal socket (systemd journald 管道)
+allow droidspacesd self:unix_dgram_socket { write sendto read getattr }
+
+# /proc 轮询 (ds-monitor)
+allow droidspacesd self:dir search
+allow droidspacesd self:lnk_file { read create }
+
+# 文件执行与映射 (容器内脚本/二进制)
+allow droidspacesd self:file { read open execute execute_no_trans map getattr ioctl write }
+
+# 审计 socket (systemd audit)
+allow droidspacesd self:netlink_audit_socket { write read nlmsg_relay }
+
+# python3 keyring
+allow droidspacesd self:key { write search }
+
+# 进程控制
+allow droidspacesd self:process { signal getsched getcap fork }
+
+# socket 文件
+allow droidspacesd self:sock_file write
+
+# 设备与管道
+allow droidspacesd self:chr_file { ioctl write }
+allow droidspacesd self:fifo_file { write ioctl }
+
+# systemd /run (tmpfs) invocation 文件与 socket 文件
+allow droidspacesd tmpfs:lnk_file create
+allow droidspacesd tmpfs:sock_file { write create setattr unlink }
